@@ -18,7 +18,7 @@
 **English TL;DR** — Host-authoritative co-op multiplayer module (up to 8 players) for the recovered Unity
 project of *Pandemonium Classic - Unity Edition*, on Mirror/kcp2k (protocol 17). Ships the module source,
 tooling and docs only; integrate it into your own recovered project.
-Integration checklist: [docs/PATCH_SITES.md](docs/PATCH_SITES.md) · Install/host/join: [INSTALL.md](INSTALL.md)
+Integration checklist: [docs/PATCH_SITES.md](docs/PATCH_SITES.md) ([English](docs/PATCH_SITES.en.md)) · Install/host/join: [INSTALL.md](INSTALL.md) · [English docs](README.en.md)
 
 > **本仓库只包含联机模块本体**。原版游戏的代码、场景与资源包需要你自备 —— 这样既能让更多人用上联机功能，
 > 也避免把原版商业游戏内容公开托管。

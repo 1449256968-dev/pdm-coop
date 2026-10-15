@@ -18,7 +18,7 @@
 
 **中文 TL;DR** — 为《Pandemonium Classic - Unity Edition》恢复工程实现的房主权威联机合作模块（最多 8 人），
 基于 Mirror/kcp2k（协议 17）。本仓库只有模块源码、工具与文档；需要接入到自己的恢复工程。
-接入清单：[docs/PATCH_SITES.md](docs/PATCH_SITES.md) · 安装与联机：[INSTALL.md](INSTALL.md)
+接入清单：[docs/PATCH_SITES.md](docs/PATCH_SITES.md)（[English](docs/PATCH_SITES.en.md)） · 安装与联机：[INSTALL.md](INSTALL.md) · [中文文档](README.md)
 
 > **This repository ships the module only.** You supply the original game's code, scenes and assets —
 > which keeps the co-op work publishable without hosting the original commercial game content.
