@@ -1,5 +1,9 @@
 # 更新日志（CHANGELOG）
 
+**中文** | [English](CHANGELOG.en.md)
+
+> 记录联机合作模块的版本变更。当前版本 **v0.7.1-p17**（协议 17、`GameBuild = Fork0.7.1`）。
+
 ## v0.7.1-p17 — 首个公开模块包
 
 联机模块从完整 Fork 中拆分出来，作为可复用模块单独发布（协议 **17**，`GameBuild = Fork0.7.1`）。

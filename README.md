@@ -1,21 +1,27 @@
 # Pandemonium Classic — Unity Edition · 四人联机合作模块
 
-> **English TL;DR** — Host-authoritative co-op multiplayer module (up to 8 players) for the recovered
-> Unity project of *Pandemonium Classic - Unity Edition*. Ships the fork's own source
-> (`Assets/Scripts/Multiplayer/`), the test/host tooling and documentation. **It contains no original
-> game code or assets**: you integrate it into your own recovered project.
-> See [docs/PATCH_SITES.md](docs/PATCH_SITES.md) for the integration checklist and
-> [INSTALL.md](INSTALL.md) for install/host/join instructions.
+**中文** | [English](README.en.md)
 
-把一个 Unity 单机游戏（**Pandemonium Classic - Unity Edition**）改造成**房主权威（host-authoritative）的多人合作模式**的联机模块。
+> **一句话说明**：为《Pandemonium Classic - Unity Edition》的 Unity 恢复工程实现的**房主权威多人联机合作模块**
+> （最多 8 人），含自包含快照复制、60 Hz 输入流与自适应姿态流、远端角色上下文、房间设置权威与篡改回滚，
+> 以及一键跑分 / 回归 / 实机测试工具链。
 
-两个设计目标：
-1. **非房主移动平滑不卡顿**，手感参考 Minecraft（无客户端预测，靠"输入 60Hz + 姿态自适应 + 低插值延迟"逼近）；
-2. **所有人平均 60 帧**（实测 1 房主 + 3 加入者同机四进程）。
+| 项目 | 内容 |
+|---|---|
+| 引擎 / 网络 | Unity **2021.3.15f1**（Mono、Built-in RP）+ **Mirror v96.11.3 / kcp2k** |
+| 协议 | `ProtocolVersion = 17`、`GameBuild = Fork0.7.1`（所有玩家必须同一构建） |
+| 人数 / 端口 | 最多 **8 人**（房主 + 7 名加入者）；UDP 默认 **7777** |
+| 实测帧率 | 同机四进程（1 房主 + 3 加入者）：房主 **58.29** / 加入者 **59.73–59.78** |
+| 设计目标 | ① 非房主移动平滑不卡顿（参考 Minecraft，无客户端预测）② 所有人平均 60 帧 |
+| 仓库内容 | 联机模块源码（55 文件）+ 工具（12 脚本）+ 完整文档；**不含原版游戏代码/场景/资源** |
 
-> **本仓库只包含联机模块本体**：`Assets/Scripts/Multiplayer/`（55 个文件）、`Tools/`（跑分与回归脚本）、
-> 文档。**不含原版游戏代码、场景与资源包** —— 你需要一份自己的恢复工程来接入。
-> 这样既能让更多人用上联机功能，也避免把原版商业游戏内容公开托管。
+**English TL;DR** — Host-authoritative co-op multiplayer module (up to 8 players) for the recovered Unity
+project of *Pandemonium Classic - Unity Edition*, on Mirror/kcp2k (protocol 17). Ships the module source,
+tooling and docs only; integrate it into your own recovered project.
+Integration checklist: [docs/PATCH_SITES.md](docs/PATCH_SITES.md) · Install/host/join: [INSTALL.md](INSTALL.md)
+
+> **本仓库只包含联机模块本体**。原版游戏的代码、场景与资源包需要你自备 —— 这样既能让更多人用上联机功能，
+> 也避免把原版商业游戏内容公开托管。
 
 ---
 
