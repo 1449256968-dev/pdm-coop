@@ -1,0 +1,43 @@
+# Unity generated
+Library/
+Temp/
+Obj/
+obj/
+Build/
+Builds/
+Logs/
+UserSettings/
+MemoryCaptures/
+Recordings/
+*.csproj
+*.sln
+*.user
+*.pidb
+*.booproj
+*.svd
+*.unityproj
+*.pdb
+*.mdb
+*.opendb
+*.VC.db
+
+# Build output / run artifacts
+*.exe
+*.dll
+!ThirdPartyLicenses/**/*.dll
+
+# Logs and captures
+*.log
+crash-*.dmp
+*.dmp
+*.etl
+
+# Editors and OS
+.vs/
+.idea/
+.vscode/
+*.swp
+*~
+Thumbs.db
+Desktop.ini
+.DS_Store
