@@ -89,6 +89,7 @@ public sealed class CoopRemoteMovementInputSource : IPlayerMovementInputSource
     public PlayerMovementInput ReadMovement(PlayerScript player)
     {
         PlayerMovementInput input = flow == null ? default(PlayerMovementInput) : flow.Read(playerId);
+        CoopPrediction.Consumed(player, flow == null ? 0 : flow.ConsumedSequence(playerId));
         // Opt-in trace: exactly what the host simulation consumes for this remote character.
         if (CoopPlayerInputFlow.InputTrace && UnityEngine.Time.unscaledTime >= nextTrace)
         {

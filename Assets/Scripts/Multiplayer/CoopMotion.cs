@@ -39,6 +39,8 @@ public sealed class CoopMotion : MonoBehaviour
         public Component component;
         public double newest = double.NegativeInfinity;
         public Vector3 newestPosition;
+        // Mirror prunes its buffer to one sample on underrun. Retain velocity separately.
+        public TransformSnapshot previousPose, latestPose;
         public readonly SortedList<double, TransformSnapshot> samples = new SortedList<double, TransformSnapshot>(32);
     }
     private readonly Dictionary<long, Track> tracks = new Dictionary<long, Track>();
@@ -49,6 +51,10 @@ public sealed class CoopMotion : MonoBehaviour
     public long ReceivedFrames { get; private set; }
     public long OwnerMovingInterpolations { get; private set; }
     private float nextDiagnostic;
+    // Latency trace: enabled together with the input trace, which is the switch an operator
+    // already uses when diagnosing "the character reacts late".
+    private static readonly bool OwnerLatencyTrace = System.Array.IndexOf(System.Environment.GetCommandLineArgs(), "-coopInputTrace") >= 0;
+    private float nextOwnerTrace;
     // Host-only adaptive pose rate: a host that is clearly missing its frame budget must not
     // keep spending main-thread time on a 60Hz pose stream. Clients interpolate whatever
     // arrives, so dropping to 30Hz only coarsens the sampling while the host recovers.
@@ -104,14 +110,19 @@ public sealed class CoopMotion : MonoBehaviour
         bool teleport = track.samples.Count == 0 || (position - track.newestPosition).sqrMagnitude > TeleportDistance * TeleportDistance;
         if (teleport && track.samples.Count != 0) CoopPerformanceProbe.MotionTeleport();
         if (teleport) track.samples.Clear();
+        var sample = new TransformSnapshot(time, NetworkTime.localTime, position, rotation, Vector3.one);
+        track.previousPose = teleport ? sample : track.latestPose;
+        track.latestPose = sample;
         if (track.samples.Count >= 32) track.samples.RemoveAt(0);
         SnapshotInterpolation.InsertIfNotExists(track.samples, 32,
-            new TransformSnapshot(time, NetworkTime.localTime, position, rotation, Vector3.one));
+            sample);
         track.newest = time; track.newestPosition = position;
-        if (teleport && track.component != null) track.component.transform.SetPositionAndRotation(position, rotation);
+        if (teleport && track.component != null && !CoopPrediction.Owns(track.component))
+            track.component.transform.SetPositionAndRotation(position, rotation);
     }
     public static void ValidateInterpolation()
     {
+        CoopPrediction.Validate();
         var track = new Track();
         Insert(track, 1, Vector3.zero, Quaternion.identity);
         Insert(track, 1.1, Vector3.right, Quaternion.identity);
@@ -125,6 +136,25 @@ public sealed class CoopMotion : MonoBehaviour
         SnapshotInterpolation.StepInterpolation(track.samples, 1.4, out from, out to, out t);
         if (from.position != Vector3.right * 10 || to.position != from.position)
             throw new InvalidOperationException("Motion extrapolated after the packet stream stopped");
+        var extrapolation = new Track();
+        Insert(extrapolation, 1, Vector3.zero, Quaternion.identity);
+        Insert(extrapolation, 1.1, Vector3.right, Quaternion.identity);
+        SnapshotInterpolation.StepInterpolation(extrapolation.samples, 1.15, out from, out to, out t);
+        Vector3 predicted = to.position;
+        Quaternion predictedRotation = to.rotation;
+        if (from.remoteTime != to.remoteTime || !CoopLowLatency.ExtrapolateSamples(ref predicted,
+            ref predictedRotation, 1.15, extrapolation.previousPose, extrapolation.latestPose, out double ahead) ||
+            Mathf.Abs(predicted.x - 1.5f) > .0001f)
+            throw new InvalidOperationException("Low-latency underrun lost its velocity pair");
+        CoopLowLatency.ExtrapolateSamples(ref predicted, ref predictedRotation, 2,
+            extrapolation.previousPose, extrapolation.latestPose, out ahead);
+        if (Math.Abs(ahead - CoopLowLatency.MaxExtrapolation) > .000001 || Mathf.Abs(predicted.x - 1.9f) > .0001f)
+            throw new InvalidOperationException("Low-latency extrapolation exceeded its time bound");
+        Insert(extrapolation, 2, Vector3.right * 10, Quaternion.identity);
+        if (CoopLowLatency.ExtrapolateSamples(ref predicted, ref predictedRotation, 2.1,
+            extrapolation.previousPose, extrapolation.latestPose, out ahead))
+            throw new InvalidOperationException("Teleport retained pre-teleport velocity");
+        Debug.Log("[CoopMotionTest] PASS: underrun extrapolation retains velocity, stops at 90ms, resets on teleport");
         var probe = new GameObject("Snapshot pose isolation test");
         try
         {
@@ -218,19 +248,28 @@ public sealed class CoopMotion : MonoBehaviour
             long began = CoopPerformanceProbe.Begin("Coop.MotionRender");
             // NetworkTime.unscaledTime already includes Mirror's adaptive jitter
             // buffer. Adding another fixed delay here would double interpolation lag.
+            // -coopLowLatency pins that buffer low and gives the local player a shorter one.
+            CoopLowLatency.Pin();
             double time = NetworkTime.unscaledTime;
+            double ownerBoost = CoopLowLatency.OwnerBoost();
             foreach (Track track in tracks.Values)
             {
                 Component component = track.component;
                 if (component == null || !component.gameObject.activeInHierarchy || track.samples.Count == 0) continue;
-                SnapshotInterpolation.StepInterpolation(track.samples, time, out TransformSnapshot from, out TransformSnapshot to, out double t);
-                if (component == game.player && t > 0 && t < 1 && (to.position - from.position).sqrMagnitude > .000001f) OwnerMovingInterpolations++;
-                Quaternion viewRotation = component == game.player ? game.player.rotationTransformReference.rotation : Quaternion.identity;
+                bool owner = component == game.player;
+                double renderTime = owner ? time + ownerBoost : time;
+                SnapshotInterpolation.StepInterpolation(track.samples, renderTime, out TransformSnapshot from, out TransformSnapshot to, out double t);
+                if (owner && CoopPrediction.Owns(component)) continue;
+                if (owner && t > 0 && t < 1 && (to.position - from.position).sqrMagnitude > .000001f) OwnerMovingInterpolations++;
+                Quaternion viewRotation = owner ? game.player.rotationTransformReference.rotation : Quaternion.identity;
                 Vector3 before = component.transform.position;
-                component.transform.SetPositionAndRotation(Vector3.LerpUnclamped(from.position, to.position, (float)t),
-                    Quaternion.SlerpUnclamped(from.rotation, to.rotation, (float)t));
+                Vector3 renderedPosition = Vector3.LerpUnclamped(from.position, to.position, (float)t);
+                Quaternion renderedRotation = Quaternion.SlerpUnclamped(from.rotation, to.rotation, (float)t);
+                CoopLowLatency.Extrapolate(ref renderedPosition, ref renderedRotation, renderTime,
+                    track.previousPose, track.latestPose, out double ahead);
+                component.transform.SetPositionAndRotation(renderedPosition, renderedRotation);
                 CoopPerformanceProbe.MotionRendered();
-                if (component == game.player)
+                if (owner)
                 {
                     // How far the render clock sits behind the sample it is displaying: a
                     // large value is buffering lag, a zero-width pair is a stalled stream.
@@ -242,6 +281,19 @@ public sealed class CoopMotion : MonoBehaviour
                     float distance = Vector3.Distance(before, component.transform.position);
                     CoopPerformanceProbe.OwnerStep(distance);
                     if (distance < TeleportDistance) game.player.movementTrack += distance;
+                    if (OwnerLatencyTrace && Time.unscaledTime >= nextOwnerTrace)
+                    {
+                        nextOwnerTrace = Time.unscaledTime + 1f;
+                        // The number that matters for "press a key, it reacts late": how far the
+                        // rendered pose is behind the newest pose the host has sent.
+                        double renderLag = track.newest - renderTime;
+                        Debug.Log("[CoopLatency] renderLagMs=" + (renderLag * 1000.0).ToString("F1") +
+                            "; bufferTimeMs=" + (NetworkClient.bufferTime * 1000.0).ToString("F1") +
+                            "; bufferMultiplier=" + NetworkClient.bufferTimeMultiplier.ToString("F2") +
+                            "; ownerBoostMs=" + (ownerBoost * 1000.0).ToString("F1") +
+                            "; held=" + (from.remoteTime == to.remoteTime) +
+                            "; samples=" + track.samples.Count + "; extrapolationMs=" + (ahead * 1000.0).ToString("F1"));
+                    }
                     if (MotionDiagnostics)
                     {
                         MeasuredFrames++;

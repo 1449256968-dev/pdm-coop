@@ -36,6 +36,7 @@ public sealed class CoopPlayerInputFlow : MonoBehaviour
 
     private readonly Dictionary<int, PlayerMovementInput> latestInput = new Dictionary<int, PlayerMovementInput>();
     private readonly Dictionary<int, uint> latestSequence = new Dictionary<int, uint>();
+    private readonly Dictionary<int, uint> consumedSequence = new Dictionary<int, uint>();
     private readonly Dictionary<int, float> lastReceived = new Dictionary<int, float>();
     private readonly HashSet<int> announced = new HashSet<int>();
 
@@ -50,6 +51,7 @@ public sealed class CoopPlayerInputFlow : MonoBehaviour
 
     public void StartServer()
     {
+        consumedSequence.Clear();
         NetworkServer.RegisterHandler<CoopPlayerInputMessage>(OnServerInput);
         latestInput.Clear();
         latestSequence.Clear();
@@ -59,6 +61,7 @@ public sealed class CoopPlayerInputFlow : MonoBehaviour
 
     public void StopServer()
     {
+        consumedSequence.Clear();
         NetworkServer.UnregisterHandler<CoopPlayerInputMessage>();
         latestInput.Clear();
         latestSequence.Clear();
@@ -79,6 +82,8 @@ public sealed class CoopPlayerInputFlow : MonoBehaviour
 
     public void Release(int playerId)
     {
+        CoopPrediction.Release(playerId);
+        consumedSequence.Remove(playerId);
         latestInput.Remove(playerId);
         latestSequence.Remove(playerId);
         lastReceived.Remove(playerId);
@@ -105,8 +110,10 @@ public sealed class CoopPlayerInputFlow : MonoBehaviour
         // Age at the moment the host simulation consumed the sample. This is the part
         // of the round trip the host cannot shorten by simulating sooner.
         CoopPerformanceProbe.InputAge(Time.unscaledTime - received);
+        if (latestSequence.TryGetValue(playerId, out uint sequence)) consumedSequence[playerId] = sequence;
         return input;
     }
+    public uint ConsumedSequence(int playerId) => consumedSequence.TryGetValue(playerId, out uint sequence) ? sequence : 0;
 
     private void LateUpdate()
     {
@@ -123,6 +130,7 @@ public sealed class CoopPlayerInputFlow : MonoBehaviour
         if (game != null && game.player != null) yaw = game.player.horizontalPlaneRotation;
 
         PlayerMovementInput input = (ValidationInputSource == null ? PlayerMovementInput.CaptureLocal(yaw) : ValidationInputSource()).Sanitized();
+        if (CoopConnectionPanel.BlocksLocalInput) input = new PlayerMovementInput { yaw = yaw };
         CoopPerformanceProbe.InputSend();
         // Opt-in real transport regression: two messages in one batch must leave
         // the newest movement sample active on the server, even at one frame time.
@@ -136,6 +144,7 @@ public sealed class CoopPlayerInputFlow : MonoBehaviour
             yaw = input.yaw,
             run = input.run
         }, Channels.Unreliable);
+        CoopPrediction.InputSent(localSequence, input);
         sentSamples++;
         if (InputTrace && Time.unscaledTime >= nextTrace)
         {
@@ -145,6 +154,7 @@ public sealed class CoopPlayerInputFlow : MonoBehaviour
                 "; forward=" + input.forward.ToString("F2") + "; run=" + input.run + "; yaw=" + input.yaw.ToString("F1") +
                 "; playerId=" + CoopReplication.Instance.LocalPlayerId + "; mainGame=" + trace.mainGameUI.activeSelf +
                 "; pause=" + trace.pauseAllInteraction + "; watchers=" + trace.inputWatcher.inputWatchers.Count +
+                "; blocked=" + CoopConnectionPanel.BlocksLocalInput + "; inWorld=" + trace.gameInProgress +
                 "; bindings=" + (GameSystem.settings.keySettingsLists == null ? -1 : GameSystem.settings.keySettingsLists.Count) +
                 MovementDiagnostics());
         }

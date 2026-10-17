@@ -9,14 +9,14 @@
 | 项目 | 内容 |
 |---|---|
 | 引擎 / 网络 | Unity **2021.3.15f1**（Mono、Built-in RP）+ **Mirror v96.11.3 / kcp2k** |
-| 协议 | `ProtocolVersion = 17`、`GameBuild = Fork0.7.1`（所有玩家必须同一构建） |
+| 协议 | `ProtocolVersion = 20`、`GameBuild = Fork0.7.1`（所有玩家必须同一构建） |
 | 人数 / 端口 | 最多 **8 人**（房主 + 7 名加入者）；UDP 默认 **7777** |
 | 实测帧率 | 同机四进程（1 房主 + 3 加入者）：房主 **58.29** / 加入者 **59.73–59.78** |
 | 设计目标 | ① 非房主移动平滑不卡顿（参考 Minecraft，无客户端预测）② 所有人平均 60 帧 |
 | 仓库内容 | 联机模块源码（55 文件）+ 工具（12 脚本）+ 完整文档；**不含原版游戏代码/场景/资源** |
 
 **English TL;DR** — Host-authoritative co-op multiplayer module (up to 8 players) for the recovered Unity
-project of *Pandemonium Classic - Unity Edition*, on Mirror/kcp2k (protocol 17). Ships the module source,
+project of *Pandemonium Classic - Unity Edition*, on Mirror/kcp2k (protocol 20). Ships the module source,
 tooling and docs only; integrate it into your own recovered project.
 Integration checklist: [docs/PATCH_SITES.md](docs/PATCH_SITES.md) ([English](docs/PATCH_SITES.en.md)) · Install/host/join: [INSTALL.md](INSTALL.md) · [English docs](README.en.md)
 
@@ -222,7 +222,7 @@ Get-Content .\RecoveredUnityProject\ExportedProject\CoopBuild.result.json   # re
 |---|---|
 | **房主只有 30 帧** | 垂直同步 60/30 悬崖（§2）。房主侧已自动关闭 vSync 并锁 60；若你改过画质档，0.5s 内会被纠正 |
 | 帧率数字异常 / 偏低 | 机器上有 `PresentMon`、录屏、加速器等抓帧工具会抢走整个核心；测量前关掉 |
-| 加入者被踢 / 连不上 | 构建不一致（协议 17）；或防火墙未放行 UDP 端口 / 未做端口转发 |
+| 加入者被踢 / 连不上 | 构建不一致（协议 20）；或防火墙未放行 UDP 端口 / 未做端口转发 |
 | 端口占用、跑分脚本报错 | 先跑 `Tools\StopCoopTestPlayers.ps1 -Tag <上次Tag>` |
 | 昵称乱码 | 命令行非 ASCII 用百分号转义，或在游戏界面直接输入 |
 | `ClipCursor failed: 拒绝访问` | 后台窗口无法锁定光标，属正常；联机层已避免因此弹模态框 |

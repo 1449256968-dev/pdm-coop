@@ -47,7 +47,7 @@ then **Allow access**. The host must allow it or nobody can connect.
 
 ## 2. Multiplayer
 
-Prerequisites: every player runs the **same build** (protocol 17, `GameBuild = Fork0.7.1`);
+Prerequisites: every player runs the **same build** (protocol 20, `GameBuild = Fork0.7.1`);
 up to **8 players** (host + 7).
 
 ### 2.1 Host
@@ -165,7 +165,7 @@ original code. Suggested order:
 | Symptom | Cause / fix |
 |---|---|
 | Others cannot connect to the host | ① firewall prompt was not allowed; ② the router does not forward the UDP port; ③ host gave a LAN IP to someone outside the LAN (use the public IP or a virtual LAN) |
-| Kicked / rejected on join | Build mismatch (protocol 17, `Fork0.7.1`) |
+| Kicked / rejected on join | Build mismatch (protocol 20, `Fork0.7.1`) |
 | "Port must be 1–65535" / room creation fails | Port already in use (often a leftover process): change the port or kill the leftovers |
 | Garbled username | Percent-escape non-ASCII (`-coopUsername %E7%8E%A9%E5%AE%B6`) or type it in the UI |
 | **Host at 30 FPS** | VSync 60/30 cliff. The host now sets `vSyncCount = 0` and caps at 60; a quality-level change is re-corrected within 0.5 s |

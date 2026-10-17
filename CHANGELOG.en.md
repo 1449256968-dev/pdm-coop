@@ -5,6 +5,38 @@
 > Version history of the multiplayer co-op module. Current release **v0.7.1-p17**
 > (protocol 17, `GameBuild = Fork0.7.1`).
 
+## v0.7.1-p20 — prediction, connection UI, snapshot pacing (current)
+
+Protocol **20**. Every player must use the same complete build; p17/p18/p19 cannot connect.
+
+**Added**
+
+- Local horizontal movement prediction (on by default): 60 Hz input intent, server-confirmed sequence,
+  replay of unconfirmed input, collision sweep/slide, small-error smoothing, hard reset on large error.
+  Only manual horizontal movement is predicted; AI, skills, knockback, combat and items stay
+  server-authoritative.
+- Domain / IP / port connection page (the old in-game panel is kept), accepting `host:port`, a separate
+  remote port and a local listen port.
+- Low-latency mode `-coopLowLatency`; the panel shows live RTT.
+- Attack arcs now travel as reliable host-confirmed events (a short click always shows the effect);
+  fixed the shake and movement problem after ship assimilation.
+- Independent character selection, player status bars, spectator view.
+
+**Fixed**
+
+- A joiner could not act at all: the connection form gated every local input; it now closes
+  automatically once the world starts.
+- A joiner's world lagged seconds behind on low bandwidth: the send budget is now a host-wide total
+  shared per peer, capped at 1 MB/s by default, gated by queue delay, backed off under congestion, and
+  stale snapshots older than one second are dropped.
+- Extrapolation failed when the interpolation buffer was exhausted; two round/disconnect exceptions.
+
+**Upgrade**
+
+1. Stop old clients; 2. replace the whole folder with the new build; 3. verify the zip SHA256 and the
+   packaged `BUILD_MANIFEST.json`; 4. launch the game executable (no test flags); 5. confirm both sides
+   report the same protocol before starting.
+
 ## v0.7.1-p17 — first public module package
 
 The co-op module was split out of the full fork and published as a reusable module

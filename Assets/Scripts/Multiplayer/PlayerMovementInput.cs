@@ -25,6 +25,7 @@ public struct PlayerMovementInput
     // Preserve the original bindings, inversion and keyboard/controller mixing.
     public static PlayerMovementInput CaptureLocal(float yaw)
     {
+        if (CoopConnectionPanel.BlocksLocalInput) return new PlayerMovementInput { yaw = yaw };
         bool left = Held(HoPInput.StrafeLeft);
         bool right = Held(HoPInput.StrafeRight);
         bool forwards = Held(HoPInput.MoveForwards);

@@ -116,7 +116,7 @@ public sealed class CoopMotionHandsValidation : MonoBehaviour
             if (!captured && textureChanges > 0) { captured = true; Capture(phase); }
         }
     }
-    private static void Capture(int phase)
+    internal static void Capture(int phase)
     {
         var active = RenderTexture.active;
         var target = new RenderTexture(960, 640, 24);

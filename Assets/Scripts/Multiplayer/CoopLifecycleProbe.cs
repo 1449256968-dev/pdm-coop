@@ -61,7 +61,15 @@ public sealed class CoopLifecycleProbe : MonoBehaviour
         bool host = Environment.GetCommandLineArgs().Contains("-coopHost");
         if (host)
         {
-            if (stage == 0 && Time.unscaledTime - resultAt > 30)
+            var choices = manager.GetComponent<CoopPlayerSelection>();
+            bool nextChoiceReady = NetworkServer.connections.Values.Any(c => !(c is LocalConnectionToClient) &&
+                c.isAuthenticated && choices.TryGet(c, out var choice) && choice.species == Male.npcType.name);
+            if (stage == 0 && Time.unscaledTime - resultAt > 120)
+            {
+                stage = -1;
+                throw new InvalidOperationException("Client intermission selection did not reach the host");
+            }
+            if (stage == 0 && Time.unscaledTime - resultAt > 30 && nextChoiceReady)
             {
                 game.mainMenuUI.StartNewGame(false); stage = 1; actionAt = Time.unscaledTime;
                 Debug.Log("[CoopLifecycle] Host started second original world");
@@ -84,14 +92,24 @@ public sealed class CoopLifecycleProbe : MonoBehaviour
                 manager.JoinAddress(address, port); stage = 2;
                 Debug.Log("[CoopLifecycle] Client rejoining same host");
             }
-            else if (stage == 2 && CoopReplication.Instance.LocalPlayerId != 0)
+            else if (stage == 2 && CoopReplication.Instance.LocalPlayerId != 0 && game.postGame)
             {
                 stage = 3;
                 Debug.Log("[CoopLifecycle] Rejoin applied; owner=" + CoopReplication.Instance.LocalPlayerId + "; postGame=" + game.postGame);
+                game.mainMenuUI.speciesChoice.SetValueWithoutNotify(1); // Choose Male for the next world.
+                var definitions = NPCType.types.ToArray();
+                var selection = manager.GetComponent<CoopPlayerSelection>();
+                selection.CaptureLocal(); selection.SendLocal();
+                if (!definitions.SequenceEqual(NPCType.types))
+                    throw new InvalidOperationException("Intermission selection replaced live canonical species definitions");
+                Debug.Log("[CoopLifecycle] Intermission selection preserved canonical species definitions");
             }
             else if (stage == 3 && manager.GetComponent<CoopWorld>().Generation >= 2 && !game.postGame && CoopReplication.Instance.LocalPlayerId != 0)
             {
                 stage = 4;
+                if (!game.player.npcType.SameAncestor(Male.npcType))
+                    throw new InvalidOperationException("Next world inherited the host species instead of the client's new selection");
+                Debug.Log("[CoopLifecycle] Client next-world selection preserved; species=Male");
                 Debug.Log("[CoopLifecycle] Client second world applied; owner=" + CoopReplication.Instance.LocalPlayerId + "; hp=" + game.player.hp + "; generation=" + manager.GetComponent<CoopWorld>().Generation);
             }
         }

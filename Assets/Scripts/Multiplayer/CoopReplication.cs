@@ -57,13 +57,23 @@ public sealed class CoopReplication : MonoBehaviour
     private CoopCachedStateGraph captureGraph, applyGraph;
     private Task<EncodedSnapshot> encoding;
     private Task<DecodedSnapshot> decoding;
-    private readonly Dictionary<NetworkConnectionToClient, Dictionary<string, float>> knownRecipes = new Dictionary<NetworkConnectionToClient, Dictionary<string, float>>();
+    private sealed class PeerSnapshotState
+    {
+        public readonly Dictionary<string, float> recipes = new Dictionary<string, float>();
+        public readonly CoopSnapshotPacer pacer = new CoopSnapshotPacer(Time.unscaledTime);
+    }
+    private readonly Dictionary<NetworkConnectionToClient, PeerSnapshotState> snapshotPeers = new Dictionary<NetworkConnectionToClient, PeerSnapshotState>();
     private string pendingRecipeKey;
     private byte[][] pendingRecipe;
     private int pendingRecipeBytes;
     private static readonly ProfilerMarker EncodeWorkerMarker = new ProfilerMarker("Coop.EncodeWorker");
     private static readonly ProfilerMarker DecodeWorkerMarker = new ProfilerMarker("Coop.DecodeWorker");
     private float nextSend, nextTrace;
+    // Reliable snapshots are the bulk of the host's upstream traffic: a full payload is ~64KB, so
+    // 10Hz is ~640KB/s *per client*. Home and hole-punched links cannot carry that, kcp2k's send
+    // queue grows past 10000 segments and the server drops that member ("the player froze").
+    // The interval is therefore derived from the payload size and the worst measured link RTT.
+    private float snapshotInterval = 0.1f;
     // Reused apply-scratch buffers: the tail runs on every snapshot and the previous
     // implementation allocated a list, two hash sets and a renderer array each time.
     private readonly List<Texture> retainedTextures = new List<Texture>();
@@ -86,7 +96,49 @@ public sealed class CoopReplication : MonoBehaviour
     private bool resultPresented;
     private bool entityCaptureValidated;
     private int uiTraceFrames;
-    private const int ChunkSize = 24000;
+    private const int ChunkSize = 4000;
+    private sealed class SnapshotTransfer
+    {
+        public uint world;
+        public IEnumerator<TransferChunk> chunks;
+        public TransferChunk next;
+        public bool inRecipes;
+    }
+    private struct TransferChunk { public string key; public int index, count, owner; public uint world, revision; public byte[] data; }
+    private readonly Dictionary<NetworkConnectionToClient, SnapshotTransfer> transfers = new Dictionary<NetworkConnectionToClient, SnapshotTransfer>();
+    private readonly List<NetworkConnectionToClient> completedTransfers = new List<NetworkConnectionToClient>();
+    private float nextTransferTrace;
+    private int droppedStale;
+    private static readonly double UploadCap = UploadLimit();
+    private static double UploadLimit()
+    {
+        var args = Environment.GetCommandLineArgs(); int at = Array.IndexOf(args, "-coopUploadKBps");
+        if (at >= 0 && at + 1 < args.Length && double.TryParse(args[at + 1],
+            System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out double value) &&
+            !double.IsInfinity(value) && value > 0) return value * 1024;
+        // No flag: still cap the HOST uplink. An uncapped host (old default 0) saturated a home
+        // upstream within seconds and the reliable backlog then delivered the world seconds late.
+        // This is a host total, shared across peers; -coopUploadKBps overrides it.
+        return 1024 * 1024;
+    }
+    private void ClearTransfers()
+    {
+        foreach (var transfer in transfers.Values) transfer.chunks.Dispose();
+        transfers.Clear();
+        snapshotPeers.Clear();
+        droppedStale = 0;
+    }
+    public void ReleaseConnection(NetworkConnectionToClient connection)
+    {
+        if (transfers.TryGetValue(connection, out var transfer))
+        {
+            transfer.chunks.Dispose();
+            transfers.Remove(connection);
+        }
+        snapshotPeers.Remove(connection);
+        if (CommandLine.Contains("-coopLifecycleValidate"))
+            Debug.Log("[CoopPacingTest] Peer released; snapshotPeers=" + snapshotPeers.Count + "; transfers=" + transfers.Count);
+    }
     private const int MaxSnapshot = 8 * 1024 * 1024;
     private static readonly string[] CommandLine = Environment.GetCommandLineArgs();
     private static readonly bool ValidateState = CommandLine.Contains("-coopValidate");
@@ -189,14 +241,14 @@ public sealed class CoopReplication : MonoBehaviour
         LocalPlayerId = 0;
         resultPresented = false;
     }
-    public void StopServer() { hostIds.Clear(); anchors.Clear(); anchorObjects.Clear(); revision = 0; prepared = false; encoding = null; knownRecipes.Clear(); captureGraph = null; }
-    public void ResetHostWorld() { hostIds.Clear(); anchors.Clear(); anchorObjects.Clear(); prepared = false; encoding = null; knownRecipes.Clear(); captureGraph = null; CoopTextureReference.Reset(); }
+    public void StopServer() { ClearTransfers(); hostIds.Clear(); anchors.Clear(); anchorObjects.Clear(); revision = 0; prepared = false; encoding = null; captureGraph = null; }
+    public void ResetHostWorld() { ClearTransfers(); hostIds.Clear(); anchors.Clear(); anchorObjects.Clear(); prepared = false; encoding = null; captureGraph = null; CoopTextureReference.Reset(); }
     public static void Checkout(Component entity)
     {
         if (Instance != null && NetworkServer.active) Instance.hostIds.Remove(entity);
     }
     private bool Entity(Component c) => c is CharacterStatus || c is StrikeableLocation || c is ItemOrb || c is ItemCrate ||
-        (c != null && PrefabTypes().Contains(c.GetType()) && !(c is FloatingText));
+        (c != null && PrefabTypes().Contains(c.GetType()) && !(c is FloatingText) && !(c is AttackArc));
     // ActiveObjects holds thousands of components and the active set is far smaller.
     // Caching the pooled prefab types keeps the per-component filter off reflection-heavy
     // dictionary probing, which dominated host capture time.
@@ -312,6 +364,7 @@ public sealed class CoopReplication : MonoBehaviour
     {
         var world = GetComponent<CoopWorld>();
         var game = GameSystem.instance;
+        if (NetworkServer.active) PumpTransfers();
         // Full snapshots supersede earlier snapshots. Network callbacks only assemble
         // the newest one; never replay a queue of obsolete worlds in a single frame.
         if (!NetworkServer.active && decoding != null && decoding.IsCompleted)
@@ -344,17 +397,19 @@ public sealed class CoopReplication : MonoBehaviour
                     long perfSend = CoopPerformanceProbe.Begin("Coop.Send");
                     try { SendSnapshot(encoded); }
                     finally { CoopPerformanceProbe.End("sendSnapshot", perfSend); }
+                    UpdateSnapshotInterval(encoded.bytes.Length);
                 }
             }
             catch (Exception e) { Debug.LogError("[Coop] State encode failed: " + e); nextSend = Time.unscaledTime + 5f; }
         }
         if (!NetworkServer.active || !world.SharedWorldRunning || game == null || game.map == null) return;
         if (!NetworkServer.connections.Values.Any(c => c != null && c.isAuthenticated && c != NetworkServer.localConnection)) return;
+        if (!NetworkServer.connections.Values.Any(c => c != null && c.isAuthenticated && c != NetworkServer.localConnection && !transfers.ContainsKey(c) && !Backlogged(c))) return;
         if (Time.unscaledTime < nextSend) return;
         if (encoding != null) return; // One immutable full snapshot in flight; no backlog.
         // Diagnostic floor measurement only: leave the world frozen while the window records.
         if (CoopPerformanceProbe.SkipStateReplication && CoopPerformanceProbe.Recording) return;
-        nextSend = Time.unscaledTime + 0.1f;
+        nextSend = Time.unscaledTime + snapshotInterval;
         try { Publish(); }
         catch (Exception e) { Debug.LogError("[Coop] State publish failed: " + e); nextSend = Time.unscaledTime + 5f; }
     }
@@ -586,6 +641,137 @@ public sealed class CoopReplication : MonoBehaviour
         try { System.Threading.Thread.CurrentThread.Priority = previous; }
         catch (Exception) { }
     }
+    /// <summary>
+    /// Keeps reliable snapshot traffic inside what the slowest joined link can actually carry.
+    /// Without this a saturated upstream (a full payload at 10Hz is ~640KB/s per client) lets
+    /// kcp2k's send queue grow past its 10000-segment limit, and the server then disconnects that
+    /// member mid-game - which the players see as a frozen teammate.
+    /// </summary>
+    private void UpdateSnapshotInterval(int payloadBytes)
+    {
+        double worstRtt = 0;
+        foreach (var connection in NetworkServer.connections.Values)
+            if (connection != null && connection.isAuthenticated && connection != NetworkServer.localConnection)
+                worstRtt = Math.Max(worstRtt, connection.rtt);
+        // Per-client upstream budget: a LAN can take a megabyte per second, a 60ms link cannot.
+        double budget = worstRtt < 0.03 ? 1200000 : worstRtt < 0.08 ? 500000 : worstRtt < 0.15 ? 250000 : worstRtt < 0.30 ? 150000 : 90000;
+        float byBudget = (float)(payloadBytes / budget);
+        float updated = Mathf.Clamp(Mathf.Max(0.1f, byBudget), 0.1f, 1f);
+        if (Mathf.Abs(updated - snapshotInterval) > 0.005f && (SnapshotDiagnostics || updated > 0.11f))
+            Debug.Log("[Coop] Snapshot interval " + snapshotInterval.ToString("F3") + "s -> " + updated.ToString("F3") +
+                "s; payload=" + (payloadBytes / 1024) + "KB; worstRttMs=" + (worstRtt * 1000.0).ToString("F0") +
+                "; upstream=" + (payloadBytes / Math.Max(0.0001f, updated) / 1024f).ToString("F0") + "KB/s per client");
+        snapshotInterval = updated;
+    }
+    private static readonly bool SnapshotDiagnostics = System.Array.IndexOf(System.Environment.GetCommandLineArgs(), "-coopInputTrace") >= 0;
+    private CoopKcpTransport pacingTransport;
+    // KCP counts MTU-sized segments, not our 4KB chunks; convert for a queue-delay estimate.
+    private const double SegmentBytes = 1200;
+    private double QueueDelayMs(NetworkConnectionToClient connection, double budget)
+    {
+        if (pacingTransport == null) pacingTransport = GetComponent<CoopKcpTransport>();
+        if (pacingTransport == null) return 0;
+        int pending = pacingTransport.PendingReliable(connection.connectionId);
+        return pending * SegmentBytes / Math.Max(1.0, budget) * 1000.0;
+    }
+    // A deep reliable backlog is exactly the "the joiner's world is seconds behind" symptom:
+    // KCP delivers in order, so every queued segment is another slice of stale world. The gate is
+    // therefore expressed as queue delay (~0.5s of this connection's own budget) instead of a
+    // fixed 128-segment ceiling, which at a narrow link allowed several seconds of backlog.
+    private bool Backlogged(NetworkConnectionToClient connection)
+    {
+        return QueueDelayMs(connection, PacingBudget(connection)) >= 500;
+    }
+    private double PacingBudget(NetworkConnectionToClient connection)
+    {
+        // One host has one uplink, and a snapshot is broadcast to every peer: the link budget below
+        // is HOST-WIDE and shared out per peer. Reading it as a per-connection allowance multiplied
+        // the real traffic by the player count (2 peers on a 250KB/s link were fed ~1MB/s), which is
+        // what pushed snapshots several seconds deep into KCP on the narrow profiles.
+        int peers = 0;
+        double worstRtt = 0;
+        foreach (var peer in NetworkServer.connections.Values)
+        {
+            if (peer == null || !peer.isAuthenticated || peer == NetworkServer.localConnection) continue;
+            peers++;
+            worstRtt = Math.Max(worstRtt, peer.rtt);
+        }
+        double total = worstRtt < .03 ? 1200000 : worstRtt < .08 ? 500000 : worstRtt < .15 ? 250000 : worstRtt < .30 ? 150000 : 90000;
+        if (UploadCap > 0) total = Math.Min(total, UploadCap * .85);
+        var game = GameSystem.instance;
+        int actors = game == null ? 24 : game.activeCharacters.Count;
+        double motionReserve = actors * 36 * (actors > 24 ? 30 : 60) + 9000;
+        return Math.Max(8000, total / Math.Max(1, peers) - motionReserve);
+    }
+    private IEnumerable<TransferChunk> TransferChunks(EncodedSnapshot snapshot, uint rev, int owner, Dictionary<string, float> seen)
+    {
+        foreach (var recipe in snapshot.recipes)
+        {
+            if (seen.TryGetValue(recipe.Key, out float sentAt) && Time.unscaledTime - sentAt < 20) continue;
+            int pieces = (recipe.Value.Length + ChunkSize - 1) / ChunkSize;
+            for (int part = 0; part < pieces; part++)
+            {
+                int length = Math.Min(ChunkSize, recipe.Value.Length - part * ChunkSize);
+                var data = new byte[length]; Buffer.BlockCopy(recipe.Value, part * ChunkSize, data, 0, length);
+                yield return new TransferChunk { key = recipe.Key, index = part, count = pieces, data = data, world = snapshot.world };
+            }
+            seen[recipe.Key] = Time.unscaledTime;
+        }
+        int count = (snapshot.bytes.Length + ChunkSize - 1) / ChunkSize;
+        for (int part = 0; part < count; part++)
+        {
+            int length = Math.Min(ChunkSize, snapshot.bytes.Length - part * ChunkSize);
+            var data = new byte[length]; Buffer.BlockCopy(snapshot.bytes, part * ChunkSize, data, 0, length);
+            yield return new TransferChunk { index = part, count = count, data = data,
+                world = snapshot.world, revision = rev, owner = owner };
+        }
+    }
+    private void PumpTransfers()
+    {
+        completedTransfers.Clear();
+        double now = Time.unscaledTime;
+        uint activeWorld = GetComponent<CoopWorld>().Generation;
+        int peakQueue = 0;
+        double peakQueueMs = 0;
+        foreach (var pair in transfers)
+        {
+            var connection = pair.Key; var transfer = pair.Value;
+            if (transfer.world != activeWorld || !NetworkServer.connections.TryGetValue(connection.connectionId, out var live) || live != connection)
+            { completedTransfers.Add(connection); continue; }
+            double budget = PacingBudget(connection);
+            var pacer = snapshotPeers[connection].pacer;
+            double queueMs = QueueDelayMs(connection, budget);
+            pacer.Advance(now, budget, queueMs);
+            // State snapshots are self-contained, so a stale one has no value: once the reliable
+            // queue would deliver it more than a second late, drop it and let the next snapshot win.
+            // Recipe chunks are never dropped (the receiver needs them to resolve appearance).
+            if (queueMs > 1000 && !transfer.inRecipes) { droppedStale++; completedTransfers.Add(connection); continue; }
+            while (!Backlogged(connection) && pacer.TrySpend(transfer.next.data.Length + 96))
+            {
+                var chunk = transfer.next;
+                transfer.inRecipes = chunk.key != null;
+                if (chunk.key == null)
+                    connection.Send(new CoopStateChunk { revision = chunk.revision, owner = chunk.owner,
+                        index = chunk.index, count = chunk.count, data = chunk.data, world = chunk.world });
+                else
+                    connection.Send(new CoopRecipeChunk { world = chunk.world, key = chunk.key,
+                        index = chunk.index, count = chunk.count, data = chunk.data });
+                if (!transfer.chunks.MoveNext()) { completedTransfers.Add(connection); break; }
+                transfer.next = transfer.chunks.Current;
+            }
+            if (pacingTransport != null) peakQueue = Math.Max(peakQueue, pacingTransport.PendingReliable(connection.connectionId));
+            peakQueueMs = Math.Max(peakQueueMs, queueMs);
+        }
+        foreach (var connection in completedTransfers) { transfers[connection].chunks.Dispose(); transfers.Remove(connection); }
+        if (SnapshotDiagnostics && transfers.Count > 0 && Time.unscaledTime >= nextTransferTrace)
+        {
+            nextTransferTrace = Time.unscaledTime + 5;
+            Debug.Log("[CoopPacing] activeTransfers=" + transfers.Count + "; pendingReliableSegments=" + peakQueue +
+                "; queueMs=" + peakQueueMs.ToString("F0") +
+                "; droppedStale=" + droppedStale +
+                "; chunkBytes=" + ChunkSize + "; uploadCapKBps=" + (UploadCap / 1024).ToString("F0"));
+        }
+    }
     private void SendSnapshot(EncodedSnapshot snapshot)
     {
         byte[] bytes = snapshot.bytes;
@@ -595,28 +781,15 @@ public sealed class CoopReplication : MonoBehaviour
             if (connection == null || !connection.isAuthenticated || connection == NetworkServer.localConnection) continue;
             int owner = GetComponent<CoopSession>().GetPlayerId(connection);
             if (!snapshot.owners.Contains(owner)) continue;
-            if (!knownRecipes.TryGetValue(connection, out var seen)) knownRecipes[connection] = seen = new Dictionary<string, float>();
-            foreach (var recipe in snapshot.recipes)
-            {
-                // Reliable definitions precede every snapshot that references them.
-                // Renew leases before the receiver's 60-second eviction threshold.
-                if (seen.TryGetValue(recipe.Key, out float sentAt) && Time.unscaledTime - sentAt < 20) continue;
-                int pieces = (recipe.Value.Length + ChunkSize - 1) / ChunkSize;
-                for (int part = 0; part < pieces; part++)
-                {
-                    int length = Math.Min(ChunkSize, recipe.Value.Length - part * ChunkSize); var data = new byte[length];
-                    Buffer.BlockCopy(recipe.Value, part * ChunkSize, data, 0, length);
-                    connection.Send(new CoopRecipeChunk { world = snapshot.world, key = recipe.Key, index = part, count = pieces, data = data });
-                }
-                seen[recipe.Key] = Time.unscaledTime;
-            }
-            int count = (bytes.Length + ChunkSize - 1) / ChunkSize;
-            for (int i = 0; i < count; i++)
-            {
-                int length = Math.Min(ChunkSize, bytes.Length - i * ChunkSize);
-                var chunk = new byte[length]; Buffer.BlockCopy(bytes, i * ChunkSize, chunk, 0, length);
-                connection.Send(new CoopStateChunk { revision = rev, owner = owner, index = i, count = count, data = chunk, world = snapshot.world });
-            }
+            // One in-progress world per peer. Later worlds supersede ones that
+            // have not started; never accumulate an application snapshot queue.
+            if (transfers.ContainsKey(connection) || Backlogged(connection)) continue;
+            if (!snapshotPeers.TryGetValue(connection, out var peer))
+                snapshotPeers[connection] = peer = new PeerSnapshotState();
+            var chunks = TransferChunks(snapshot, rev, owner, peer.recipes).GetEnumerator();
+            if (chunks.MoveNext()) transfers[connection] = new SnapshotTransfer {
+                world = snapshot.world, chunks = chunks, next = chunks.Current };
+            else chunks.Dispose();
         }
         if (Time.unscaledTime >= nextTrace)
         {
@@ -882,6 +1055,8 @@ public sealed class CoopReplication : MonoBehaviour
             if (c == game.player)
             {
                 bool observer = !c.gameObject.activeSelf;
+                if (observer && !game.playerInactive)
+                    game.observer.directTransformReference.SetPositionAndRotation(game.player.rotationTransformReference.position, game.player.rotationTransformReference.rotation);
                 game.playerInactive = observer;
                 game.observer.gameObject.SetActive(observer);
                 game.activePrimaryCameraTransform = observer ? game.observer.directTransformReference : game.player.rotationTransformReference;

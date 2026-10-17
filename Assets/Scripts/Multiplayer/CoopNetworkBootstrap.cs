@@ -12,9 +12,10 @@ public static class CoopNetworkBootstrap
 
         var networkObject = new GameObject("Coop Network Manager");
         Object.DontDestroyOnLoad(networkObject);
-        networkObject.AddComponent<KcpTransport>();
+        networkObject.AddComponent<CoopKcpTransport>();
         var manager = networkObject.AddComponent<CoopNetworkManager>();
         networkObject.AddComponent<CoopConnectionPanel>();
+        networkObject.AddComponent<CoopLegacyConnectionPanel>();
         StartFromCommandLine(manager);
     }
 
@@ -42,10 +43,12 @@ public static class CoopNetworkBootstrap
         }
         string target = ValueAfter(arguments, "-coopJoin");
         if (target == null) return;
-        int separator = target.LastIndexOf(':');
-        if (separator <= 0 || separator == target.Length - 1) return;
-        string address = target.Substring(0, separator);
-        if (!ushort.TryParse(target.Substring(separator + 1), out ushort joinPort) || joinPort == 0) return;
+        if (!CoopEndpoint.TryParse(target, CoopNetworkManager.DefaultPort.ToString(), out string address, out ushort joinPort, out string error))
+        {
+            manager.SetConnectionFailure(error);
+            Debug.LogError("[Coop] Invalid endpoint: " + error);
+            return;
+        }
         Debug.Log("[Coop] Command line: joining " + address + ":" + joinPort);
         manager.JoinAddress(address, joinPort);
     }

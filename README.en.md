@@ -10,14 +10,14 @@
 | | |
 |---|---|
 | Engine / network | Unity **2021.3.15f1** (Mono, Built-in RP) + **Mirror v96.11.3 / kcp2k** |
-| Protocol | `ProtocolVersion = 17`, `GameBuild = Fork0.7.1` (every player must run the same build) |
+| Protocol | `ProtocolVersion = 20`, `GameBuild = Fork0.7.1` (every player must run the same build) |
 | Players / port | up to **8** (host + 7 joiners); default UDP **7777** |
 | Measured FPS | four processes on one machine (1 host + 3 joiners): host **58.29** / joiners **59.73–59.78** |
 | Design goals | ① smooth non-host movement (Minecraft-like, no client-side prediction) ② 60 FPS for everyone |
 | Repo contents | module source (55 files) + tooling (12 scripts) + full docs; **no original game code/scenes/assets** |
 
 **中文 TL;DR** — 为《Pandemonium Classic - Unity Edition》恢复工程实现的房主权威联机合作模块（最多 8 人），
-基于 Mirror/kcp2k（协议 17）。本仓库只有模块源码、工具与文档；需要接入到自己的恢复工程。
+基于 Mirror/kcp2k（协议 20）。本仓库只有模块源码、工具与文档；需要接入到自己的恢复工程。
 接入清单：[docs/PATCH_SITES.md](docs/PATCH_SITES.md)（[English](docs/PATCH_SITES.en.md)） · 安装与联机：[INSTALL.md](INSTALL.md) · [中文文档](README.md)
 
 > **This repository ships the module only.** You supply the original game's code, scenes and assets —
@@ -242,7 +242,7 @@ the newest), `CoopIdentityValidation` (names/nameplates/menu authority/wall occl
 |---|---|
 | **Host stuck at 30 FPS** | VSync 60/30 cliff (§2). The host side now disables VSync and caps at 60; changing the quality level re-asserts it within 0.5 s |
 | FPS looks wrong / low | Frame-capture tools such as `PresentMon`, recorders or boosters steal a whole core — close them before measuring |
-| Joiners kicked / cannot connect | Build mismatch (protocol 17); or the UDP port is not allowed through the firewall / not port-forwarded |
+| Joiners kicked / cannot connect | Build mismatch (protocol 20); or the UDP port is not allowed through the firewall / not port-forwarded |
 | Port in use, perf script errors | Run `Tools\StopCoopTestPlayers.ps1 -Tag <previous tag>` first |
 | Garbled username | Percent-escape non-ASCII on the command line, or type it in the in-game panel |
 | `ClipCursor failed: access denied` | Background windows cannot lock the cursor — harmless; the module avoids the modal error dialog |

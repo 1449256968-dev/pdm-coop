@@ -9,7 +9,7 @@ public sealed class CoopNetworkManager : NetworkManager
     public const int MaxPlayersIncludingHost = 8;
     public const ushort DefaultPort = 7777;
     // v2 requires version authentication before Mirror Ready.
-    public const int ProtocolVersion = 17;
+    public const int ProtocolVersion = 20;
     public const string GameBuild = "Fork0.7.1";
 
     public KcpTransport KcpTransport { get; private set; }
@@ -41,7 +41,9 @@ public sealed class CoopNetworkManager : NetworkManager
         authenticator = GetComponent<CoopVersionAuthenticator>() ?? gameObject.AddComponent<CoopVersionAuthenticator>();
         gameObject.AddComponent<CoopRoomSettings>();
         gameObject.AddComponent<CoopSession>();
+        gameObject.AddComponent<CoopPlayerSelection>();
         gameObject.AddComponent<CoopNameplates>();
+        gameObject.AddComponent<CoopObserverPlayerView>();
         gameObject.AddComponent<CoopBillboards>();
         gameObject.AddComponent<CoopPlayerInputFlow>();
         gameObject.AddComponent<CoopPlayerRegistry>();
@@ -49,8 +51,10 @@ public sealed class CoopNetworkManager : NetworkManager
         gameObject.AddComponent<CoopWorld>();
         gameObject.AddComponent<CoopReplication>();
         gameObject.AddComponent<CoopMotion>();
+        gameObject.AddComponent<CoopPrediction>();
         gameObject.AddComponent<CoopActions>();
         gameObject.AddComponent<CoopReplicaHands>();
+        gameObject.AddComponent<CoopAttackEffects>();
         gameObject.AddComponent<CoopDialogue>();
         gameObject.AddComponent<CoopInventory>();
         gameObject.AddComponent<CoopUiBridge>();
@@ -77,10 +81,16 @@ public sealed class CoopNetworkManager : NetworkManager
     {
         if (KcpTransport == null || isNetworkActive || port == 0 || string.IsNullOrWhiteSpace(address))
             return false;
+        if (!CoopEndpoint.TryParse(address, port.ToString(), out string host, out port, out string error))
+        {
+            StatusText = error;
+            return false;
+        }
         KcpTransport.port = port;
-        networkAddress = address.Trim();
+        networkAddress = host;
         lastFailureReason = null;
         StatusText = "正在连接并校验版本……";
+        GetComponent<CoopPlayerSelection>().CaptureLocal();
         GetComponent<CoopRoomSettings>().BeginClient();
         StartClient();
         return true;
@@ -107,6 +117,7 @@ public sealed class CoopNetworkManager : NetworkManager
         base.OnStartServer();
         GetComponent<CoopRoomSettings>().StartServer();
         GetComponent<CoopSession>().StartServer();
+        GetComponent<CoopPlayerSelection>().StartServer();
         GetComponent<CoopPlayerInputFlow>().StartServer();
         GetComponent<CoopWorld>().StartServer();
         GetComponent<CoopActions>().StartServer();
@@ -124,6 +135,8 @@ public sealed class CoopNetworkManager : NetworkManager
         GetComponent<CoopWorld>().StartClient();
         GetComponent<CoopReplication>().StartClient();
         GetComponent<CoopMotion>().StartClient();
+        GetComponent<CoopPrediction>().StartClient();
+        GetComponent<CoopAttackEffects>().StartClient();
         GetComponent<CoopDialogue>().StartClient();
         GetComponent<CoopUiBridge>().StartClient();
         GetComponent<CoopAudio>().StartClient();
@@ -143,12 +156,15 @@ public sealed class CoopNetworkManager : NetworkManager
     public override void OnClientConnect()
     {
         base.OnClientConnect();
+        GetComponent<CoopPlayerSelection>().SendLocal();
         Debug.Log("[Coop] Client authenticated; ready=" + NetworkClient.ready);
     }
 
     public override void OnServerDisconnect(NetworkConnectionToClient connection)
     {
         (authenticator as CoopVersionAuthenticator)?.Forget(connection);
+        GetComponent<CoopReplication>().ReleaseConnection(connection);
+        GetComponent<CoopPlayerSelection>().Release(connection);
         var session = GetComponent<CoopSession>();
         var input = GetComponent<CoopPlayerInputFlow>();
         int playerId = session.GetPlayerId(connection);
@@ -173,6 +189,8 @@ public sealed class CoopNetworkManager : NetworkManager
         GetComponent<CoopPlayerInputFlow>().StopClient();
         GetComponent<CoopReplication>().StopClient();
         GetComponent<CoopMotion>().StopClient();
+        GetComponent<CoopPrediction>().StopClient();
+        GetComponent<CoopAttackEffects>().StopClient();
         CoopFirstPersonVisibility.RestoreLocal();
         GetComponent<CoopDialogue>().StopClient();
         GetComponent<CoopUiBridge>().StopClient();
@@ -199,7 +217,9 @@ public sealed class CoopNetworkManager : NetworkManager
 
     public override void OnStopServer()
     {
+        GetComponent<CoopPrediction>().ResetServer();
         GetComponent<CoopSession>().StopServer();
+        GetComponent<CoopPlayerSelection>().StopServer();
         GetComponent<CoopPlayerInputFlow>().StopServer();
         GetComponent<CoopWorld>().StopServer();
         GetComponent<CoopReplication>().StopServer();

@@ -53,7 +53,7 @@ public sealed class CoopRemoteAvatarSpawner : MonoBehaviour
         // unsynced 60 cap (see CoopNetworkManager.OnStartServer); clients are never touched.
         if (QualitySettings.vSyncCount != 0) QualitySettings.vSyncCount = 0;
         if (Application.targetFrameRate <= 0 || Application.targetFrameRate > 60) Application.targetFrameRate = 60;
-        if (!game.gameInProgress || game.map == null || game.player == null) return;
+        if ((!game.gameInProgress && !game.postGame) || game.map == null || game.player == null) return;
         var session = GetComponent<CoopSession>();
         var registry = GetComponent<CoopPlayerRegistry>();
         int hostId = session.GetPlayerId(NetworkServer.localConnection);
@@ -104,7 +104,8 @@ public sealed class CoopRemoteAvatarSpawner : MonoBehaviour
             string imageSet = humans.Count > 0 ? ExtendRandom.Random(humans) : "";
             Debug.Log("[Coop] Auto-starting shared game; imageSet=" + imageSet +
                       "; seed=" + GameSystem.settings.mapSeed);
-            game.StartGame(imageSet, imageSet, Human.npcType, isObserver: false, isTutorial: false,
+            NPCType type = CoopPlayerSelection.ResolveSpecies(CoopPlayerSelection.Argument("-coopSpecies") ?? "Human");
+            game.StartGame(imageSet, imageSet, type, isObserver: false, isTutorial: false,
                 GameSystem.settings.mapSeed);
             game.SwapToAndFromMainGameUI(swapTo: true);
             game.mainMenuUI.CloseDisclaimer();
@@ -129,16 +130,19 @@ public sealed class CoopRemoteAvatarSpawner : MonoBehaviour
             if (connection == NetworkServer.localConnection) continue;
             int playerId = session.GetPlayerId(connection);
             if (playerId == 0) continue;
+            if (!GetComponent<CoopPlayerSelection>().TryGet(connection, out var choice)) continue;
             PlayerScript existing;
             if (registry.TryGetPlayer(playerId, out existing)) continue;
-            SpawnAvatar(game, registry, playerId);
+            SpawnAvatar(game, registry, playerId, choice);
         }
     }
 
-    private void SpawnAvatar(GameSystem game, CoopPlayerRegistry registry, int playerId)
+    private void SpawnAvatar(GameSystem game, CoopPlayerRegistry registry, int playerId, CoopPlayerSelectionMessage choice)
     {
         var source = game.player;
-        if (source == null || source.npcType == null) return;
+        if (source == null) return;
+        var sourceTextures = System.Environment.GetCommandLineArgs().Contains("-coopPlayerIntegrationValidate")
+            ? source.spriteStack.Select(s => s.sprite).OfType<RenderTexture>().Where(t => t.IsCreated()).ToArray() : null;
 
         PathNode node = source.currentNode;
         if (node == null && game.map != null)
@@ -160,19 +164,42 @@ public sealed class CoopRemoteAvatarSpawner : MonoBehaviour
 
         script.IsRemotePlayer = true;
         script.CoopPlayerId = playerId;
+        // Instantiate copies the host's sprite entries but shares their Unity textures.
+        // Initialise/UpdateToType disposes the old RenderTextures, so inherited entries
+        // would destroy the host's live non-human appearance while spawning a joiner.
+        script.spriteStack = new List<SpriteSettingDefinition>();
         CoopFirstPersonVisibility.Refresh(script);
         CoopActorContext.Attach(source, script);
 
         Vector3 location = node.RandomLocation(0.5f);
-        NPCType initialType = source.npcType;
-        while (initialType.playerDerivedType && initialType.sourceType != null) initialType = initialType.sourceType;
+        // Rejoining during results still needs an owner record so snapshots can carry
+        // the result/menu state. Keep this placeholder out of the finished world;
+        // the next world will spawn the player's selected species normally.
+        bool dormant = choice.observer || game.postGame;
+        NPCType initialType = dormant ? Human.npcType : CoopPlayerSelection.ResolveSpecies(choice.species);
         using (new CoopActorContext(script))
-            script.Initialise(location.x, location.z, initialType, node, "Player " + playerId, "", "");
+        {
+            if (!dormant) initialType.PreSpawnSetup(initialType);
+            script.Initialise(location.x, location.z, initialType, node, "Player " + playerId, choice.imageSet, "");
+            if (!dormant) (script.npcType.PostSpawnSetup ?? initialType.PostSpawnSetup)?.Invoke(script);
+        }
+        if (dormant)
+        {
+            script.currentNode.RemoveNPC(script);
+            game.activeCharacters.Remove(script);
+            script.gameObject.SetActive(false);
+        }
         registry.Register(playerId, script, remote: true);
+        if (sourceTextures != null)
+        {
+            if (sourceTextures.Any(t => t == null || !t.IsCreated()))
+                throw new System.InvalidOperationException("Spawning a player disposed the host's live appearance");
+            Debug.Log("[CoopPlayerTextures] PASS; hostRenderTextures=" + sourceTextures.Length);
+        }
         spawned[playerId] = script;
         Debug.Log("[Coop] Remote avatar spawned for player " + playerId + " at " +
                   location.x.ToString("0.00") + "," + location.z.ToString("0.00") +
-                  "; type=" + source.npcType.name);
+                  "; type=" + script.npcType.name + "; observer=" + choice.observer);
     }
 
     public PlayerScript CreateReplica(int playerId)

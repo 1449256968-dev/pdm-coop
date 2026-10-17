@@ -42,7 +42,12 @@ public sealed class CoopActions : MonoBehaviour
     {
         if (!CoopReplication.IsReplica || GameSystem.instance == null || GameSystem.settings == null) return;
         var game = GameSystem.instance;
-        bool blocked = game.inputWatcher.inputWatchers.Count > 0 || !game.mainGameUI.activeSelf;
+        var frame = new CoopActionSample { quickItem = -1 };
+        bool blocked = CoopConnectionPanel.BlocksLocalInput || game.inputWatcher.inputWatchers.Count > 0 || !game.mainGameUI.activeSelf;
+        if (CoopConnectionPanel.BlocksLocalInput)
+        {
+            local.down = local.up = 0; local.skillDown = local.skillUp = false; local.quickItem = -1;
+        }
         local.held = 0;
         if (!blocked)
         {
@@ -50,17 +55,22 @@ public sealed class CoopActions : MonoBehaviour
             {
                 uint bit = 1u << (int)key;
                 if ((Allowed & bit) == 0 || !GameSystem.settings.keySettingsLists.TryGetValue(key, out var bindings)) continue;
-                if (bindings.Any(b => b.CheckForKeyDown())) local.down |= bit;
-                if (bindings.Any(b => b.CheckForKeyUp())) local.up |= bit;
+                if (bindings.Any(b => b.CheckForKeyDown())) frame.down |= bit;
+                if (bindings.Any(b => b.CheckForKeyUp())) frame.up |= bit;
                 if (bindings.Any(b => b.CheckForKeyHeld())) local.held |= bit;
             }
-            local.skillDown |= Input.GetKeyDown(KeyCode.R); local.skillUp |= Input.GetKeyUp(KeyCode.R);
+            frame.skillDown = Input.GetKeyDown(KeyCode.R); frame.skillUp = Input.GetKeyUp(KeyCode.R);
             for (int i = 0; i < 10; i++) if (Input.GetKeyDown(KeyCode.Alpha0 + i)) local.quickItem = GameSystem.settings.quickKeys[i];
         }
+        // Local presentation consumes each edge in its render frame. The network
+        // accumulator still retains the same edges until the next 30Hz packet.
+        frame.held = local.held;
+        if (ValidationInputSource == null) CoopReplicaHands.InputSample(frame);
+        local.down |= frame.down; local.up |= frame.up;
+        local.skillDown |= frame.skillDown; local.skillUp |= frame.skillUp;
         if (Time.unscaledTime < nextSend || !NetworkClient.isConnected || !NetworkClient.connection.isAuthenticated) return;
         nextSend = nextSend <= 0 || Time.unscaledTime - nextSend > 2f / 30f ? Time.unscaledTime + 1f / 30f : nextSend + 1f / 30f;
-        if (ValidationInputSource != null) local = ValidationInputSource();
-        CoopReplicaHands.InputSample(local);
+        if (ValidationInputSource != null) { local = ValidationInputSource(); CoopReplicaHands.InputSample(local); }
         local.controlPreferences = CoopPlayerControl.Capture();
         local.sequence = ++sequence;
         local.yaw = game.player.horizontalPlaneRotation;
@@ -127,6 +137,7 @@ public sealed class CoopActions : MonoBehaviour
     }
     public static bool Key(PlayerScript actor, HoPInput key, int phase)
     {
+        if (!actor.IsRemotePlayer && CoopConnectionPanel.BlocksLocalInput) return false;
         if (!actor.IsRemotePlayer && ValidationKeySource != null) { bool? test = ValidationKeySource(key, phase); if (test.HasValue) return test.Value; }
         if (!actor.IsRemotePlayer) return GameSystem.settings.keySettingsLists[key].Any(b => phase == 0 ? b.CheckForKeyDown() : phase == 1 ? b.CheckForKeyUp() : b.CheckForKeyHeld());
         if (Instance == null || Instance.consumer != actor) return false;
@@ -135,12 +146,13 @@ public sealed class CoopActions : MonoBehaviour
     }
     public static bool RawKey(PlayerScript actor, KeyCode key, int phase)
     {
+        if (!actor.IsRemotePlayer && CoopConnectionPanel.BlocksLocalInput) return false;
         if (!actor.IsRemotePlayer) return phase == 0 ? Input.GetKeyDown(key) : phase == 1 ? Input.GetKeyUp(key) : Input.GetKey(key);
         if (Instance == null || Instance.consumer != actor) return false;
         if (key == KeyCode.R) return phase == 0 ? Instance.consuming.skillDown : Instance.consuming.skillUp;
         return false;
     }
-    public static float Axis(PlayerScript actor, string axis) => actor.IsRemotePlayer ? 0f : Input.GetAxis(axis);
+    public static float Axis(PlayerScript actor, string axis) => actor.IsRemotePlayer || CoopConnectionPanel.BlocksLocalInput ? 0f : Input.GetAxis(axis);
     public static Ray Aim(PlayerScript actor)
     {
         if (!actor.IsRemotePlayer) return GameSystem.instance.mainCamera.ScreenPointToRay(new Vector3(Screen.width / 2, Screen.height / 2));

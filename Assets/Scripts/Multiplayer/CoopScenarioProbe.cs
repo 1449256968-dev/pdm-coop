@@ -59,9 +59,15 @@ public sealed class CoopScenarioProbe : MonoBehaviour
         }
         if (began < 0 || Time.unscaledTime - began < stage * 4f) return;
         var registry = NetworkManager.singleton.GetComponent<CoopPlayerRegistry>();
+        var arguments = Environment.GetCommandLineArgs();
+        int targetIndex = Array.IndexOf(arguments, "-coopScenarioPlayer");
+        int targetPlayer = targetIndex >= 0 && targetIndex + 1 < arguments.Length &&
+            int.TryParse(arguments[targetIndex + 1], out int parsedTarget) ? parsedTarget : 0;
         PlayerScript actor = null;
         foreach (var connection in NetworkServer.connections.Values)
-            if (connection != NetworkServer.localConnection && registry.TryGetPlayer(NetworkManager.singleton.GetComponent<CoopSession>().GetPlayerId(connection), out var candidate)) { actor = candidate; break; }
+            if ((targetPlayer == 0 ? connection != NetworkServer.localConnection :
+                NetworkManager.singleton.GetComponent<CoopSession>().GetPlayerId(connection) == targetPlayer) &&
+                registry.TryGetPlayer(NetworkManager.singleton.GetComponent<CoopSession>().GetPlayerId(connection), out var candidate)) { actor = candidate; break; }
         if (actor == null) return;
         using (new CoopActorContext(actor))
         {
@@ -113,6 +119,15 @@ public sealed class CoopScenarioProbe : MonoBehaviour
                     game.EndGame("Coop regression result"); Debug.Log("[CoopProbe] Stage 7: shared original result"); break;
             }
             stage++;
+        }
+        // Ending inside a remote actor's hidden UI scope must still present the
+        // shared result on the host after that scope restores scene bindings.
+        if (stage == 8)
+        {
+            if (!game.postGame || game.gameInProgress || !game.resultsDisplay.activeSelf ||
+                game.resultsText.text.IndexOf("Coop regression result", StringComparison.Ordinal) < 0)
+                throw new InvalidOperationException("Remote actor ended the round without presenting the host result");
+            Debug.Log("[CoopResultTest] PASS: remote-triggered result is visible on host after actor scope restores");
         }
     }
 }

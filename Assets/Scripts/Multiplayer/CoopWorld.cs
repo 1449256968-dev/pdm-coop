@@ -9,6 +9,7 @@ public struct CoopWorldStartMessage : NetworkMessage
     public bool isTutorial;
     public string topology;
     public uint generation;
+    public string bootstrapSpecies;
 }
 
 /// <summary>
@@ -31,6 +32,7 @@ public sealed class CoopWorld : MonoBehaviour
     public uint Generation { get; private set; }
     private string sharedTopology;
     private bool sharedTutorial;
+    private string bootstrapSpecies = "Human";
 
     private CoopPlayerInputFlow InputFlow => GetComponent<CoopPlayerInputFlow>();
 
@@ -104,7 +106,7 @@ public sealed class CoopWorld : MonoBehaviour
             !connection.isAuthenticated) return;
         if (connection == NetworkServer.localConnection) return;
         publishedTo.Add(connection.connectionId);
-        connection.Send(new CoopWorldStartMessage { mapSeed = SharedSeed, isTutorial = sharedTutorial, topology = sharedTopology, generation = Generation });
+        connection.Send(new CoopWorldStartMessage { mapSeed = SharedSeed, isTutorial = sharedTutorial, topology = sharedTopology, generation = Generation, bootstrapSpecies = bootstrapSpecies });
     }
 
     private void Broadcast()
@@ -115,7 +117,7 @@ public sealed class CoopWorld : MonoBehaviour
             if (connection == null || !connection.isAuthenticated) continue;
             if (connection == NetworkServer.localConnection) continue;
             publishedTo.Add(connection.connectionId);
-            connection.Send(new CoopWorldStartMessage { mapSeed = SharedSeed, isTutorial = sharedTutorial, topology = sharedTopology, generation = Generation });
+            connection.Send(new CoopWorldStartMessage { mapSeed = SharedSeed, isTutorial = sharedTutorial, topology = sharedTopology, generation = Generation, bootstrapSpecies = bootstrapSpecies });
         }
         Debug.Log("[Coop] Shared world published; seed=" + SharedSeed);
     }
@@ -138,7 +140,7 @@ public sealed class CoopWorld : MonoBehaviour
             if (connection == null || !connection.isAuthenticated) continue;
             if (connection == NetworkServer.localConnection) continue;
             if (!publishedTo.Add(connection.connectionId)) continue;
-            connection.Send(new CoopWorldStartMessage { mapSeed = SharedSeed, isTutorial = sharedTutorial, topology = sharedTopology, generation = Generation });
+            connection.Send(new CoopWorldStartMessage { mapSeed = SharedSeed, isTutorial = sharedTutorial, topology = sharedTopology, generation = Generation, bootstrapSpecies = bootstrapSpecies });
             Debug.Log("[Coop] Shared world sent to connectionId=" + connection.connectionId);
         }
     }
@@ -155,7 +157,7 @@ public sealed class CoopWorld : MonoBehaviour
         if (SharedWorldRunning) GetComponent<CoopReplication>().ResetClientWorld();
         SharedWorldRunning = false;
         Debug.Log("[Coop] Shared world received; seed=" + message.mapSeed);
-        if (!StartWorld(game, message.mapSeed, message.isTutorial)) return;
+        if (!StartWorld(game, message.mapSeed, message.isTutorial, message.bootstrapSpecies)) return;
         CoopTopology.Validate(game.map, message.topology);
         SharedWorldRunning = true;
         SharedSeed = message.mapSeed;
@@ -164,18 +166,19 @@ public sealed class CoopWorld : MonoBehaviour
         Debug.Log("[Coop] Shared world built on this client; seed=" + SharedSeed +
                   "; inputActive=" + (InputFlow != null && InputFlow.Active));
     }
-    public static void BeforeHostStart()
+    public static void BeforeHostStart(NPCType type)
     {
         if (!NetworkServer.active || NetworkManager.singleton == null) return;
         var world = NetworkManager.singleton.GetComponent<CoopWorld>();
+        world.bootstrapSpecies = type.name;
         world.SharedWorldRunning = false;
         world.publishedTo.Clear();
         NetworkManager.singleton.GetComponent<CoopPlayerRegistry>().Clear();
         NetworkManager.singleton.GetComponent<CoopReplication>().ResetHostWorld();
     }
 
-    // Mirrors MainMenuUI.StartNewGame's defaults (random enabled human image set, Human species).
-    private static bool StartWorld(GameSystem game, string mapSeed, bool isTutorial)
+    // Rebuild the host's initial species-dependent geometry, then snapshots bind each client's own actor.
+    private static bool StartWorld(GameSystem game, string mapSeed, bool isTutorial, string species = "Human")
     {
         try
         {
@@ -192,7 +195,8 @@ public sealed class CoopWorld : MonoBehaviour
             game.AllowSharedWorldStart = true;
             try
             {
-                game.StartGame(imageSet, imageSet, Human.npcType, isObserver: false,
+                NPCType type = CoopPlayerSelection.ResolveSpecies(species) ?? throw new System.InvalidOperationException("Unknown bootstrap species: " + species);
+                game.StartGame(imageSet, imageSet, type, isObserver: false,
                     isTutorial: isTutorial, mapSeed);
             }
             finally
